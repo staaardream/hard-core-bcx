@@ -251,6 +251,8 @@ type BCX_Rule =
 	| "block_entering_rooms"
 	| "block_leaving_room"
 	| "block_freeing_self"
+	| "block_freeing_others"
+	| "block_tying_self"
 	| "block_tying_others"
 	| "block_blacklisting"
 	| "block_whitelisting"
@@ -260,6 +262,8 @@ type BCX_Rule =
 	| "block_mainhall_maidrescue"
 	| "block_action"
 	| "block_BCX_permissions"
+	| "block_curses_self_by_others"
+	| "block_rules_self_by_others"
 	| "block_room_admin_UI"
 	| "block_using_ggts"
 	| "block_club_slave_work"
@@ -292,7 +296,6 @@ type BCX_Rule =
 	| "rc_sub_new"
 	| "rc_sub_leave"
 	| "speech_specific_sound"
-	| "speech_garble_whispers"
 	| "speech_block_gagged_ooc"
 	| "speech_block_ooc"
 	| "speech_doll_talk"
@@ -361,6 +364,11 @@ type RuleCustomData = {
 	};
 	block_freeing_self: {
 		allowEasyItemsToggle: boolean;
+		blockSwappingToggle: boolean;
+	};
+	block_freeing_others: {
+		allowEasyItemsToggle: boolean;
+		blockSwappingToggle: boolean;
 	};
 	block_tying_others: {
 		onlyMoreDominantsToggle: boolean;
@@ -753,11 +761,9 @@ interface CommandDisplayDefinition {
 	defaultLimit: import("./constants").ConditionsLimit;
 }
 
-// FIXME: remove post-R113
-// @ts-expect-error Because the Locked/Private are still marked as mandatory on the upstream type
 interface RoomTemplate extends Omit<ServerChatRoomData, "Ban" | "MapData" | "Space" | "Character"> {
-	Locked?: boolean;
-	Private?: boolean;
+	Locked?: never;
+	Private?: never;
 	Ban?: never;
 	MapData?: never;
 	Space?: never;

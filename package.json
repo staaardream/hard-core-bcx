@@ -1,8 +1,8 @@
 {
-	"name": "HardCoreClub-STRICT",
-  "version": "1.1.10-STRICT",
-	"repository": "git@github.com:Rufflan/HardCroeClub.git",
-	"author": "Rufflan (hwkm0818@gmail.com)",
+	"name": "hard-core-bcx",
+    "version": "1.1.12-STRICT",
+	"repository": "git@github.com:staaardream/hard-core-bcx.git",
+	"author": "staaardream <staaardream@gmail.com>",
 	"license": "GPL-3.0",
 	"private": true,
 	"engines": {
@@ -34,7 +34,7 @@
 		"@types/jest": "^29.5.6",
 		"@typescript-eslint/eslint-plugin": "^8.21.0",
 		"@typescript-eslint/parser": "^8.21.0",
-		"bc-stubs": "^121.0.0",
+		"bc-stubs": "^123.0.0-Beta.3",
 		"clean-webpack-plugin": "^4.0.0",
 		"copy-webpack-plugin": "^12.0.2",
 		"cross-env": "^7.0.3",

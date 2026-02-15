@@ -465,21 +465,32 @@ export function initRules_bc_blocks() {
 		load(state) {
 			// @ts-expect-error bcx rule handling
 			DialogSelfMenuMapping.Pose.clickStatusCallbacks.bcx_block_restrict_allowed_poses = function (C: Character, pose: Pose) {
-				if (C.IsPlayer() && state.isEnforced && state.customData?.poseButtons.includes(pose.Name)) {
+				if (state.inEffect && state.isEnforced && C.IsPlayer() && state.customData?.poseButtons.includes(pose.Name)) {
 					return 'Restricted by BCX rule: "Restrict allowed body poses"';
 				}
 			};
-			hookFunction("DialogSelfMenuMapping.Pose._ClickButton", 5, (args, next) => {
+			hookFunction("DialogSelfMenuMapping.Pose._ClickButton", 0, (args, next) => {
 				const C = args[1];
 				const clickedPose = args[2];
-				if (C.IsPlayer() && state.isLogged && state.customData?.poseButtons.includes(clickedPose.Name)) {
-					state.triggerAttempt();
+				if (state.inEffect && C.IsPlayer() && state.customData?.poseButtons.includes(clickedPose.Name)) {
+					// This triggers when a restricted pose *is* selected (i.e. not blocked by disable)
+					if (state.isLogged) state.trigger();
 				}
 				return next(args);
 			}, ModuleCategory.Rules);
+			// We are hooking the eventListener directly here as DialogMenuMapping does not implement _ClickDisabledButton
+			hookFunction("DialogSelfMenuMapping.Pose.eventListeners._ClickDisabledButton", 0, function (this: HTMLButtonElement, args, next) {
+				const C = DialogSelfMenuMapping.Pose.C;
+				const clickedPose = DialogSelfMenuMapping.Pose._GetClickedObject(this);
+				if (state.inEffect && state.isEnforced && C.IsPlayer() && clickedPose && state.customData?.poseButtons.includes(clickedPose.Name)) {
+					// This triggers when a restricted pose is attempted to be selected, but is blocked by disable
+					if (state.isLogged) state.triggerAttempt();
+				}
+				return next(args);
+			});
 			hookFunction("PoseCanChangeUnaidedStatus", 0, ([C, poseName, ...args], next) => {
 				const status = next([C, poseName, ...args]);
-				if (C?.IsPlayer() && state.isEnforced && state.customData?.poseButtons.includes(poseName)) {
+				if (state.inEffect && state.isEnforced && C?.IsPlayer() && state.customData?.poseButtons.includes(poseName)) {
 					return Math.min(status, PoseChangeStatus.NEVER_WITHOUT_AID) as PoseChangeStatus;
 				} else {
 					return status;
@@ -587,9 +598,16 @@ export function initRules_bc_blocks() {
 				}, ModuleCategory.Rules);
 			}
 			hookFunction("ChatSearchCreateGridRoomTooltip", 5, (args, next) => {
-				const tooltips = next(args);
+				let tooltips = next(args);
 				const [roomResult] = args;
 				if (isRoomBlocked(roomResult.Name)) {
+					if (tooltips === undefined) {
+						tooltips = ElementCreate({
+							tag: "div",
+							attributes: { id: `chat-search-room-tooltip-${args[1]}` },
+							classList: ["chat-search-room-tooltip"],
+						});
+					}
 					tooltips.appendChild(ElementCreate({
 						tag: "span",
 						classList: ["chat-search-room-tooltip-entry", "chat-search-room-tooltip-bcx-blocked"],
@@ -652,7 +670,7 @@ export function initRules_bc_blocks() {
 		name: "Forbid freeing self",
 		type: RuleType.Block,
 		shortDescription: "PLAYER_NAME removing any items from PLAYER_NAME's body",
-		longDescription: "This rule forbids PLAYER_NAME to remove any items from her own body. Other people can still remove them. The rule has a toggle to optionally still allow to remove items which were given a low difficulty score by the original asset maker, such as hand-held items, plushies, etc. This means that custom crafted properties given to an item such as 'decoy' are not factored in.",
+		longDescription: "This rule forbids PLAYER_NAME to remove any items from her own body. Other people can still remove them. The rule has a toggle to optionally still allow to remove items which were given a low difficulty score by the original asset maker, such as hand-held items, plushies, etc. This means that custom crafted properties given to an item such as 'decoy' are not factored in. It also has a toggle to prevent swapping items.",
 		keywords: ["limiting", "untying", "unbinding", "bondage"],
 		triggerTexts: {
 			infoBeep: "You are not allowed to remove an item from your body!",
@@ -666,9 +684,15 @@ export function initRules_bc_blocks() {
 				default: false,
 				description: "Still allow removing low difficulty items",
 			},
+			blockSwappingToggle: {
+				type: "toggle",
+				default: false,
+				description: "Also block swapping items",
+				Y: 530,
+			},
 		},
 		load(state) {
-			let score: number = 999;
+			let cachedScore: number = 999;
 			AddDialogMenuButtonName("BCX_RemoveDisabled", "Usage blocked by BCX");
 			AddDialogMenuButtonName("BCX_StruggleDisabled", "Usage blocked by BCX");
 			AddDialogMenuButtonName("BCX_DismountDisabled", "Usage blocked by BCX");
@@ -683,11 +707,11 @@ export function initRules_bc_blocks() {
 				if (C.ID === 0 && C.FocusGroup && state.isEnforced) {
 					const Item = InventoryGet(C, C.FocusGroup.Name);
 					if (Item && state.customData?.allowEasyItemsToggle) {
-						score = (Item.Asset.Difficulty ?? 0) + (typeof Item.Property?.Difficulty === "number" ? Item.Property.Difficulty : 0);
-						if (score <= 1) {
+						cachedScore = (Item.Asset.Difficulty ?? 0) + (typeof Item.Property?.Difficulty === "number" ? Item.Property.Difficulty : 0);
+						if (cachedScore <= 1) {
 							return;
 						}
-					}
+					} else cachedScore = 999;
 					const index_remove = GetDialogMenuButtonArray().indexOf("Remove");
 					const index_struggle = GetDialogMenuButtonArray().indexOf("Struggle");
 					const index_dismount = GetDialogMenuButtonArray().indexOf("Dismount");
@@ -706,14 +730,23 @@ export function initRules_bc_blocks() {
 					}
 				}
 			}, ModuleCategory.Rules);
+			// @ts-expect-error bcx rule handling
+			DialogMenuMapping.items.clickStatusCallbacks.bcx_block_freeing_self = function (C: Character, currentItem: Item, equippedItem: Item) {
+				if (!C.IsPlayer() || !state.inEffect || !state.isEnforced) return;
+				if (state.customData?.allowEasyItemsToggle && cachedScore <= 1) return;
+				if (!equippedItem || !state.customData?.blockSwappingToggle) return;
+				if (currentItem.Asset.Name === equippedItem.Asset.Name && currentItem.Craft === equippedItem.Craft) return;
+
+				return 'Restricted by BCX rule: "Forbid freeing self"';
+			};
 			const trigger = (C: Character): boolean => {
-				if (C.ID === 0 && state.inEffect && score > 1) {
+				if (C.ID === 0 && state.inEffect && cachedScore > 1) {
 					state.trigger();
 				}
 				return false;
 			};
 			const attempt = (C: Character): boolean => {
-				if (C.ID === 0 && state.inEffect && score > 1) {
+				if (C.ID === 0 && state.inEffect && cachedScore > 1) {
 					state.triggerAttempt();
 				}
 				return false;
@@ -726,6 +759,179 @@ export function initRules_bc_blocks() {
 			hookDialogMenuButtonClick("BCX_DismountDisabled", attempt);
 			hookDialogMenuButtonClick("Escape", trigger);
 			hookDialogMenuButtonClick("BCX_EscapeDisabled", attempt);
+			hookFunction("DialogMenuMapping.items._ClickButton", 0, (args, next) => {
+				const C = args[1];
+				const currentItem = args[2];
+				const equippedItem = args[3];
+				if (state.customData?.blockSwappingToggle && equippedItem) {
+					if (currentItem.Asset.Name !== equippedItem.Asset.Name || currentItem.Craft !== equippedItem.Craft)
+						trigger(C);
+				}
+				return next(args);
+			});
+			hookFunction("DialogMenuMapping.items.eventListeners._ClickDisabledButton", 0, function (this: HTMLButtonElement, args, next) {
+				const C = DialogMenuMapping.items.C;
+				const currentItem = DialogMenuMapping.items._GetClickedObject(this);
+				const equippedItem = DialogMenuMapping.items.focusGroup ? InventoryGet(C, DialogMenuMapping.items.focusGroup.Name) : null;
+				if (state.customData?.blockSwappingToggle && currentItem && equippedItem) {
+					if (currentItem.Asset.Name !== equippedItem.Asset.Name || currentItem.Craft !== equippedItem.Craft)
+						attempt(C);
+				}
+				return next(args);
+			});
+		},
+	});
+
+	registerRule("block_freeing_others", {
+		name: "Forbid freeing others",
+		type: RuleType.Block,
+		longDescription: "This rule forbids PLAYER_NAME to remove any items from other characters. The rule has a toggle to optionally still allow to remove items which were given a low difficulty score by the original asset maker, such as hand-held items, plushies, etc. This means that custom crafted properties given to an item such as 'decoy' are not factored in. It also has a toggle to prevent swapping items.",
+		keywords: ["limiting", "untying", "unbinding", "bondage"],
+		triggerTexts: {
+			infoBeep: "You are not allowed to remove an item from TARGET_PLAYER!",
+			attempt_log: "PLAYER_NAME tried to remove an item from TARGET_PLAYER, which was forbidden",
+			log: "PLAYER_NAME removed an item from TARGET_PLAYER, which was forbidden",
+		},
+		defaultLimit: ConditionsLimit.normal,
+		dataDefinition: {
+			allowEasyItemsToggle: {
+				type: "toggle",
+				default: false,
+				description: "Still allow removing low difficulty items",
+			},
+			blockSwappingToggle: {
+				type: "toggle",
+				default: false,
+				description: "Also block swapping items",
+				Y: 530,
+			},
+		},
+		load(state) {
+			let cachedScore: number = 999;
+			AddDialogMenuButtonName("BCX_RemoveDisabled", "Usage blocked by BCX");
+			AddDialogMenuButtonName("BCX_StruggleDisabled", "Usage blocked by BCX");
+			AddDialogMenuButtonName("BCX_DismountDisabled", "Usage blocked by BCX");
+			AddDialogMenuButtonName("BCX_EscapeDisabled", "Usage blocked by BCX");
+			RedirectGetImage("Icons/BCX_Remove.png", "Icons/Remove.png");
+			RedirectGetImage("Icons/BCX_Struggle.png", "Icons/Struggle.png");
+			RedirectGetImage("Icons/BCX_Dismount.png", "Icons/Dismount.png");
+			RedirectGetImage("Icons/BCX_Escape.png", "Icons/Escape.png");
+			hookFunction("DialogMenuButtonBuild", 0, (args, next) => {
+				next(args);
+				const C = args[0];
+				if (!C.IsPlayer() && C.FocusGroup && state.isEnforced) {
+					const Item = InventoryGet(C, C.FocusGroup.Name);
+					if (Item && state.customData?.allowEasyItemsToggle) {
+						cachedScore = (Item.Asset.Difficulty ?? 0) + (typeof Item.Property?.Difficulty === "number" ? Item.Property.Difficulty : 0);
+						if (cachedScore <= 1) {
+							return;
+						}
+					} else cachedScore = 999;
+					const index_remove = GetDialogMenuButtonArray().indexOf("Remove");
+					const index_struggle = GetDialogMenuButtonArray().indexOf("Struggle");
+					const index_dismount = GetDialogMenuButtonArray().indexOf("Dismount");
+					const index_escape = GetDialogMenuButtonArray().indexOf("Escape");
+					if (index_remove >= 0) {
+						GetDialogMenuButtonArray()[index_remove] = "BCX_RemoveDisabled";
+					}
+					if (index_struggle >= 0) {
+						GetDialogMenuButtonArray()[index_struggle] = "BCX_StruggleDisabled";
+					}
+					if (index_dismount >= 0) {
+						GetDialogMenuButtonArray()[index_dismount] = "BCX_DismountDisabled";
+					}
+					if (index_escape >= 0) {
+						GetDialogMenuButtonArray()[index_escape] = "BCX_EscapeDisabled";
+					}
+				}
+			}, ModuleCategory.Rules);
+			// @ts-expect-error bcx rule handling
+			DialogMenuMapping.items.clickStatusCallbacks.bcx_block_freeing_others = function (C: Character, currentItem: Item, equippedItem: Item) {
+				if (!C.IsPlayer() || !state.inEffect || !state.isEnforced) return;
+				if (state.customData?.allowEasyItemsToggle && cachedScore <= 1) return;
+				if (!equippedItem || !state.customData?.blockSwappingToggle) return;
+				if (currentItem.Asset.Name === equippedItem.Asset.Name && currentItem.Craft === equippedItem.Craft) return;
+
+				return 'Restricted by BCX rule: "Forbid freeing others"';
+			};
+			const trigger = (C: Character): boolean => {
+				if (!C.IsPlayer() && state.inEffect && cachedScore > 1) {
+					state.trigger(C.MemberNumber);
+				}
+				return false;
+			};
+			const attempt = (C: Character): boolean => {
+				if (!C.IsPlayer() && state.inEffect && cachedScore > 1) {
+					state.triggerAttempt(C.MemberNumber);
+				}
+				return false;
+			};
+			hookDialogMenuButtonClick("Remove", trigger);
+			hookDialogMenuButtonClick("BCX_RemoveDisabled", attempt);
+			hookDialogMenuButtonClick("Struggle", trigger);
+			hookDialogMenuButtonClick("BCX_StruggleDisabled", attempt);
+			hookDialogMenuButtonClick("Dismount", trigger);
+			hookDialogMenuButtonClick("BCX_DismountDisabled", attempt);
+			hookDialogMenuButtonClick("Escape", trigger);
+			hookDialogMenuButtonClick("BCX_EscapeDisabled", attempt);
+			hookFunction("DialogMenuMapping.items._ClickButton", 0, (args, next) => {
+				const C = args[1];
+				const currentItem = args[2];
+				const equippedItem = args[3];
+				if (state.customData?.blockSwappingToggle && equippedItem) {
+					if (currentItem.Asset.Name !== equippedItem.Asset.Name || currentItem.Craft !== equippedItem.Craft)
+						trigger(C);
+				}
+				return next(args);
+			});
+			hookFunction("DialogMenuMapping.items.eventListeners._ClickDisabledButton", 0, function (this: HTMLButtonElement, args, next) {
+				const C = DialogMenuMapping.items.C;
+				const currentItem = DialogMenuMapping.items._GetClickedObject(this);
+				const equippedItem = DialogMenuMapping.items.focusGroup ? InventoryGet(C, DialogMenuMapping.items.focusGroup.Name) : null;
+				if (state.customData?.blockSwappingToggle && currentItem && equippedItem) {
+					if (currentItem.Asset.Name !== equippedItem.Asset.Name || currentItem.Craft !== equippedItem.Craft)
+						attempt(C);
+				}
+				return next(args);
+			});
+		},
+	});
+
+	registerRule("block_tying_self", {
+		name: "Forbid tying up self",
+		type: RuleType.Block,
+		longDescription: "This rule forbids PLAYER_NAME to use any items on herself.",
+		keywords: ["limiting", "prevent", "restraints", "bondage"],
+		triggerTexts: {
+			infoBeep: "You are not allowed to use an item on yourself!",
+			attempt_log: "PLAYER_NAME tried to use an item on herself, which was forbidden",
+			log: "PLAYER_NAME used an item on herself, which was forbidden",
+		},
+		defaultLimit: ConditionsLimit.normal,
+		load(state) {
+			// @ts-expect-error bcx rule handling
+			DialogMenuMapping.items.clickStatusCallbacks.bcx_block_tying_self = function (C: Character) {
+				if (state.inEffect && state.isEnforced && C.IsPlayer()) {
+					return 'Restricted by BCX rule: "Forbid tying up self"';
+				}
+			};
+			hookFunction("DialogMenuMapping.items._ClickButton", 0, (args, next) => {
+				const C = args[1];
+				if (state.inEffect && C.IsPlayer()) {
+					// This triggers when an item *is* used on self (i.e. not blocked by disable)
+					if (state.isLogged) state.trigger();
+				}
+				return next(args);
+			}, ModuleCategory.Rules);
+			// We are hooking the eventListener directly here as DialogMenuMapping does not implement _ClickDisabledButton
+			hookFunction("DialogMenuMapping.items.eventListeners._ClickDisabledButton", 0, (args, next) => {
+				const C = DialogMenuMapping.items.C;
+				if (state.inEffect && state.isEnforced && C.IsPlayer()) {
+					// This triggers when an item use is blocked by disable
+					if (state.isLogged) state.triggerAttempt();
+				}
+				return next(args);
+			}, ModuleCategory.Rules);
 		},
 	});
 
@@ -749,26 +955,31 @@ export function initRules_bc_blocks() {
 			},
 		},
 		load(state) {
-			hookFunction("DialogItemClick", 5, (args, next) => {
-				if (state.inEffect && state.customData) {
-					const toggleOn = state.customData.onlyMoreDominantsToggle;
-					const C = args[1];
-					if (C && C.ID !== 0 && (toggleOn ? ReputationCharacterGet(Player, "Dominant") < ReputationCharacterGet(C, "Dominant") : true)) {
-						if (state.isEnforced) {
-							state.triggerAttempt(C.MemberNumber);
-							return;
-						} else {
-							state.trigger(C.MemberNumber);
-						}
-					}
+			const dominantCheck = (C: Character): boolean =>
+				state.customData?.onlyMoreDominantsToggle ?
+					ReputationCharacterGet(Player, "Dominant") < ReputationCharacterGet(C, "Dominant") :
+					true;
+
+			// @ts-expect-error bcx rule handling
+			DialogMenuMapping.items.clickStatusCallbacks.bcx_block_tying_others = function (C: Character) {
+				if (state.inEffect && state.isEnforced && !C.IsPlayer() && dominantCheck(C)) {
+					return 'Restricted by BCX rule: "Forbid tying up others"';
+				}
+			};
+			hookFunction("DialogMenuMapping.items._ClickButton", 0, (args, next) => {
+				const C = args[1];
+				if (state.inEffect && !C.IsPlayer() && dominantCheck(C)) {
+					// This triggers when an item *is* used on self (i.e. not blocked by disable)
+					if (state.isLogged) state.trigger();
 				}
 				return next(args);
 			}, ModuleCategory.Rules);
-			hookFunction("AppearanceGetPreviewImageColor", 5, (args, next) => {
-				const toggleOn = state.customData?.onlyMoreDominantsToggle;
-				const C = args[0];
-				if (C && C.ID !== 0 && state.isEnforced && (toggleOn ? ReputationCharacterGet(Player, "Dominant") < ReputationCharacterGet(C, "Dominant") : true)) {
-					return "grey";
+			// We are hooking the eventListener directly here as DialogMenuMapping does not implement _ClickDisabledButton
+			hookFunction("DialogMenuMapping.items.eventListeners._ClickDisabledButton", 0, (args, next) => {
+				const C = DialogMenuMapping.items.C;
+				if (state.inEffect && state.isEnforced && !C.IsPlayer() && dominantCheck(C)) {
+					// This triggers when an item use is blocked by disable
+					if (state.isLogged) state.triggerAttempt();
 				}
 				return next(args);
 			}, ModuleCategory.Rules);
@@ -969,6 +1180,28 @@ export function initRules_bc_blocks() {
 		shortDescription: "PLAYER_NAME using her permissions for her own BCX, with some exceptions",
 		longDescription: "This rule forbids PLAYER_NAME access to some parts of their own BCX they have permission to use, making it as if they do not have 'self access' (see BCX tutorial on permission system) while the rule is active. This rule still leaves access for all permissions where the lowest permitted role ('lowest access') is also set to PLAYER_NAME (to prevent getting stuck). This rule does not affect PLAYER_NAME's permissions to use another users's BCX.",
 		keywords: ["limiting", "preventing", "controlling", "accessing", "self", "rights"],
+		defaultLimit: ConditionsLimit.blocked,
+		// Implemented externally
+	});
+
+	registerRule("block_curses_self_by_others", {
+		name: "Prevent accessing curses by others",
+		loggable: false,
+		type: RuleType.Block,
+		shortDescription: "PLAYER_NAME accessing curses placed on herself by others",
+		longDescription: "This rule forbids PLAYER_NAME from accessing (or removing) any curses that were placed on her by other BCX users. This additionally blocks bulk actions and editing the global config to prevent bypassing this rule. PLAYER_NAME can still access (and remove) curses she herself placed. This rule does not affect PLAYER_NAME's permissions to use another users' BCX.",
+		keywords: ["limiting", "preventing", "controling", "accessing", "self", "rights"],
+		defaultLimit: ConditionsLimit.blocked,
+		// Implemented externally
+	});
+
+	registerRule("block_rules_self_by_others", {
+		name: "Prevent accessing rules by others",
+		loggable: false,
+		type: RuleType.Block,
+		shortDescription: "PLAYER_NAME accessing rules placed on herself by others",
+		longDescription: "This rule forbids PLAYER_NAME from accessing (or removing) any rules that were placed on her by other BCX users. This additionally blocks bulk actions and editing the global config to prevent bypassing this rule. PLAYER_NAME can still access (and remove) rules she herself placed. This rule does not affect PLAYER_NAME's permissions to use another users' BCX.",
+		keywords: ["limiting", "preventing", "controling", "accessing", "self", "rights"],
 		defaultLimit: ConditionsLimit.blocked,
 		// Implemented externally
 	});
